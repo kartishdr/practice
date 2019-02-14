@@ -1,2 +1,2 @@
 FROM kartish/c7-java-tomcat
-copy sample.war /opt/tomcat/webapps
+copy sample.war /opt/tomcat/webapps/sample.war
