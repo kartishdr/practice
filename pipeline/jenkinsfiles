@@ -1,0 +1,69 @@
+def CONTAINER_NAME="$params.serviceimage"
+def SERVICE_NAME="$params.service"
+def CONTAINER_TAG="$params.tag"
+def REMOTE_IP="$params.ip"
+
+node {
+
+    // stage('Initialize'){
+    //     def dockerHome = tool 'myDocker'
+    //     def mavenHome  = tool 'myMaven'
+    //     env.PATH = "${dockerHome}/bin:${mavenHome}/bin:${env.PATH}"
+    // }
+
+    stage('Checkout') {
+        checkout scm
+    }
+
+    // stage('Build'){
+    //     sh "mvn clean install"
+    // }
+
+    stage("Image Prune"){
+        sh 'whoami'
+        imagePrune(CONTAINER_NAME)
+    }
+
+    stage('Image Build'){
+        imageBuild(CONTAINER_NAME, CONTAINER_TAG, SERVICE_NAME)
+    }
+
+    stage('Push to Docker Registry'){
+         withCredentials([usernamePassword(credentialsId: 'harbor-credentials', usernameVariable: 'USERNAME', passwordVariable: 'PASSWORD')]) {
+            pushToImage(CONTAINER_NAME, CONTAINER_TAG, REMOTE_IP, USERNAME, PASSWORD)
+        }
+    }
+
+    stage('Run App'){
+         withCredentials([usernamePassword(credentialsId: 'harbor-credentials', usernameVariable: 'USERNAME', passwordVariable: 'PASSWORD')]) {
+            runApp(CONTAINER_NAME, CONTAINER_TAG, REMOTE_IP, USERNAME, PASSWORD)
+     }
+    } 
+
+}
+
+def imagePrune(containerName){
+    try {
+        sh "docker image prune -f"
+    } catch(error){}
+}
+
+def imageBuild(containerName, tag, service){
+    sh "cd $params.service && docker build -t $containerName:$params.tag  -t $containerName --pull --no-cache ."
+    echo "Image build complete"
+}
+
+def pushToImage(containerName, tag, remoteIp, dockerUser, dockerPassword){
+    sh "docker login -u $dockerUser -p $dockerPassword $remoteIp:8082"
+    sh "docker tag $containerName:$tag $remoteIp:8082/$params.service/$containerName:$tag && docker tag $containerName:latest $remoteIp:8082/$params.service/$containerName:latest"
+    sh "docker push $remoteIp:8082/$params.service/$containerName:$tag && docker push $remoteIp:8082/$params.service/$containerName:latest"
+    echo "Image push complete"
+}
+
+def runApp(containerName, tag, remoteIp, dockerUser, dockerPassword){
+     sh "ssh-keyscan -H $remoteIp >> ~/.ssh/known_hosts && ssh -i ~/docker_harbor.pem centos@$remoteIp 'docker login -u $dockerUser -p $dockerPassword $remoteIp:8082 && docker rmi -f $remoteIp:8082/$params.service/$containerName:latest && docker pull $remoteIp:8082/$params.service/$containerName:latest'"
+     sh "sed -i -e 's/nexusserver/$remoteIp/g' pipeline/docker-compose.yml"
+     sh "ssh-keyscan -H $remoteIp >> ~/.ssh/known_hosts && scp -i ~/docker_harbor.pem -r /var/lib/jenkins/workspace/kartish-pipeline/pipeline/docker-compose.yml centos@$remoteIp:/home/centos" 
+     sh "ssh-keyscan -H $remoteIp >> ~/.ssh/known_hosts && ssh -i ~/docker_harbor.pem centos@$remoteIp 'cd /home/centos && docker login -u $dockerUser -p $dockerPassword $remoteIp:8082 && docker image prune -f && docker-compose up -d'"
+     echo "App services are running"
+}
